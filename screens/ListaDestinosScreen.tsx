@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import {
   View,
@@ -7,7 +8,13 @@ import {
   ActivityIndicator
 } from 'react-native';
 
-import { collection, onSnapshot } from 'firebase/firestore';
+import {
+  collection,
+  onSnapshot,
+  doc,
+  updateDoc
+} from 'firebase/firestore';
+
 import { auth, db } from '../firebaseConfig';
 
 import {
@@ -68,7 +75,15 @@ export default function ListaDestinosScreen() {
           };
         });
 
-        setDestinos(lista);
+        // Evitar consultas repetidas cuando cambia el clima
+        setDestinos((anteriores) => {
+          if (JSON.stringify(anteriores) === JSON.stringify(lista)) {
+            return anteriores;
+          }
+
+          return lista;
+        });
+
         setError('');
         setCargando(false);
       },
@@ -82,7 +97,7 @@ export default function ListaDestinosScreen() {
     return () => cancelar();
   }, []);
 
-  // Consultar el clima de cada destino
+  // Consultar el clima y guardarlo en Firebase
   useEffect(() => {
     let activo = true;
 
@@ -94,43 +109,101 @@ export default function ListaDestinosScreen() {
           `&appid=${OPENWEATHER_API_KEY}` +
           `&units=metric&lang=es`;
 
+        console.log('Consultando clima de:', destino.ciudad);
+
         const respuesta = await fetch(url);
 
+        // Mostrar el error real de OpenWeather
         if (!respuesta.ok) {
-          throw new Error('Error al consultar OpenWeather');
+          const detalle = await respuesta.text();
+
+          console.log('Código de OpenWeather:', respuesta.status);
+          console.log('Respuesta de OpenWeather:', detalle);
+
+          throw new Error(
+            `OpenWeather respondió con el código ${respuesta.status}`
+          );
         }
 
         const datos = await respuesta.json();
 
-        if (activo) {
-          setClimas((anteriores) => ({
-            ...anteriores,
-            [destino.id]: {
-              temperatura: datos.main.temp,
-              descripcion: datos.weather[0].description,
-              humedad: datos.main.humidity
-            }
-          }));
+        const climaActual: Clima = {
+          temperatura: datos.main.temp,
+          descripcion: datos.weather[0].description,
+          humedad: datos.main.humidity
+        };
 
-          setErroresClima((anteriores) => ({
-            ...anteriores,
-            [destino.id]: ''
-          }));
+        if (!activo) {
+          return;
+        }
+
+        // Mostrar el clima en la aplicación
+        setClimas((anteriores) => ({
+          ...anteriores,
+          [destino.id]: climaActual
+        }));
+
+        setErroresClima((anteriores) => ({
+          ...anteriores,
+          [destino.id]: ''
+        }));
+
+        // Guardar los datos del clima en Firestore
+        const usuario = auth.currentUser;
+
+        if (usuario && activo) {
+          const referenciaDestino = doc(
+            db,
+            'usuarios',
+            usuario.uid,
+            'destinos',
+            destino.id
+          );
+
+          try {
+            await updateDoc(referenciaDestino, {
+              temperatura: climaActual.temperatura,
+              descripcionClima: climaActual.descripcion,
+              humedad: climaActual.humedad
+            });
+
+            console.log(
+              'Clima guardado correctamente en Firebase:',
+              destino.ciudad
+            );
+          } catch (errorGuardado) {
+            console.log(
+              'Error al guardar clima en Firebase:',
+              errorGuardado
+            );
+
+            if (activo) {
+              setErroresClima((anteriores) => ({
+                ...anteriores,
+                [destino.id]:
+                  'El clima se consultó, pero no se pudo guardar en Firebase.'
+              }));
+            }
+          }
         }
       } catch (errorClima) {
-        console.log('Error al consultar clima:', errorClima);
+        console.log(
+          'Error al consultar el clima de',
+          destino.ciudad,
+          errorClima
+        );
 
         if (activo) {
           setErroresClima((anteriores) => ({
             ...anteriores,
             [destino.id]:
-              'No se pudo consultar el clima. Revisa tu conexión.'
+              'No se pudo consultar el clima. Revisa la terminal.'
           }));
         }
       }
     }
 
-    // Limpiar los datos anteriores al realizar nuevas consultas
+    // Limpiar los resultados anteriores
     setClimas({});
     setErroresClima({});
 
@@ -143,12 +216,15 @@ export default function ListaDestinosScreen() {
     };
   }, [destinos]);
 
-  // Indicador mientras se cargan los destinos
+  // Indicador de carga de destinos
   if (cargando) {
     return (
       <View style={styles.contenedor}>
         <ActivityIndicator size="large" color="#2196F3" />
-        <Text style={styles.mensaje}>Cargando destinos...</Text>
+
+        <Text style={styles.mensaje}>
+          Cargando destinos...
+        </Text>
       </View>
     );
   }
@@ -197,7 +273,11 @@ export default function ListaDestinosScreen() {
                 </View>
               ) : (
                 <View style={styles.cargandoClima}>
-                  <ActivityIndicator size="small" color="#2196F3" />
+                  <ActivityIndicator
+                    size="small"
+                    color="#2196F3"
+                  />
+
                   <Text style={styles.textoCarga}>
                     Consultando clima...
                   </Text>
@@ -270,4 +350,3 @@ const styles = StyleSheet.create({
     marginTop: 20
   }
 });
-
